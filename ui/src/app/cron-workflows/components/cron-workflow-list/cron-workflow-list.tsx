@@ -24,7 +24,7 @@ import {PrettySchedule} from '../pretty-schedule';
 
 require('./cron-workflow-list.scss');
 
-const learnMore = <a href='https://argoproj.github.io/argo-workflows/cron-workflows/'>Learn more</a>;
+const learnMore = <a href='https://argo-workflows.readthedocs.io/en/release-3.4/cron-workflows/'>Learn more</a>;
 
 export const CronWorkflowList = ({match, location, history}: RouteComponentProps<any>) => {
     // boiler-plate
@@ -35,7 +35,7 @@ export const CronWorkflowList = ({match, location, history}: RouteComponentProps
     const [namespace, setNamespace] = useState(Utils.getNamespace(match.params.namespace) || '');
     const [sidePanel, setSidePanel] = useState(queryParams.get('sidePanel') === 'true');
     const [labels, setLabels] = useState([]);
-    const [states, setStates] = useState([]);
+    const [states, setStates] = useState(['Running', 'Suspended']); // check all by default
 
     useEffect(
         useQueryParams(history, p => {

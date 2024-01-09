@@ -328,7 +328,7 @@ func TestArtifactoryArtifact(t *testing.T) {
 }
 
 func TestAzureArtifact(t *testing.T) {
-	a := &AzureArtifact{Blob: "my-blob", AzureBlobContainer: AzureBlobContainer{Container: "my-container"}}
+	a := &AzureArtifact{Blob: "my-blob", AzureBlobContainer: AzureBlobContainer{Endpoint: "my-endpoint", Container: "my-container"}}
 	assert.True(t, a.HasLocation())
 	assert.NoError(t, a.SetKey("my-blob"))
 	key, err := a.GetKey()
@@ -433,7 +433,7 @@ func TestArtifactLocation_Get(t *testing.T) {
 
 	v, err = (&ArtifactLocation{}).Get()
 	assert.Nil(t, v)
-	assert.EqualError(t, err, "You need to configure artifact storage. More information on how to do this can be found in the docs: https://argoproj.github.io/argo-workflows/configure-artifact-repository/")
+	assert.EqualError(t, err, "You need to configure artifact storage. More information on how to do this can be found in the docs: https://argo-workflows.readthedocs.io/en/release-3.4/configure-artifact-repository/")
 
 	v, _ = (&ArtifactLocation{Azure: &AzureArtifact{}}).Get()
 	assert.IsType(t, &AzureArtifact{}, v)
@@ -724,6 +724,29 @@ func TestNodes_Children(t *testing.T) {
 	})
 	t.Run("Empty", func(t *testing.T) {
 		assert.Empty(t, Nodes{}.Children("node_1"))
+	})
+}
+
+func TestNestedChildren(t *testing.T) {
+	nodes := Nodes{
+		"node_0": NodeStatus{Name: "node_0", Phase: NodeFailed, Children: []string{"node_1", "node_2"}},
+		"node_1": NodeStatus{Name: "node_1", Phase: NodeFailed, Children: []string{"node_3"}},
+		"node_2": NodeStatus{Name: "node_2", Phase: NodeRunning, Children: []string{}},
+		"node_3": NodeStatus{Name: "node_3", Phase: NodeRunning, Children: []string{"node_4"}},
+		"node_4": NodeStatus{Name: "node_4", Phase: NodeRunning, Children: []string{}},
+	}
+	t.Run("Get children", func(t *testing.T) {
+		statuses, err := nodes.NestedChildrenStatus("node_0")
+		assert.NoError(t, err)
+		found := make(map[string]bool)
+		// parent is already assumed to be found
+		found["node_0"] = true
+		for _, child := range statuses {
+			_, ok := found[child.Name]
+			assert.False(t, ok, "got %s", child.Name)
+			found[child.Name] = true
+		}
+		assert.Equal(t, len(nodes), len(found))
 	})
 }
 
@@ -1532,4 +1555,108 @@ func TestGetExecSpec(t *testing.T) {
 	wf.Status.StoredWorkflowSpec = nil
 
 	assert.Equal(t, wf.GetExecSpec().Templates[0].Name, "spec-template")
+}
+
+// Check that inline tasks and steps are properly recovered from the store
+func TestInlineStore(t *testing.T) {
+	tests := map[ResourceScope]bool{
+		ResourceScopeLocal:      false,
+		ResourceScopeNamespaced: true,
+		ResourceScopeCluster:    true,
+	}
+
+	for scope, shouldStore := range tests {
+		t.Run(string(scope), func(t *testing.T) {
+			wf := Workflow{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "test",
+				},
+				Spec: WorkflowSpec{
+					Templates: []Template{
+						{
+							Name: "dag-template",
+							DAG: &DAGTemplate{
+								Tasks: []DAGTask{
+									{
+										Name: "hello1",
+										Inline: &Template{
+											Script: &ScriptTemplate{
+												Source: "abc",
+											},
+										},
+									}, {
+										Name: "hello2",
+										Inline: &Template{
+											Script: &ScriptTemplate{
+												Source: "def",
+											},
+										},
+									},
+								},
+							},
+						},
+						{
+							Name: "step-template",
+							Steps: []ParallelSteps{
+								ParallelSteps{
+									[]WorkflowStep{
+										{
+											Name: "hello1",
+											Inline: &Template{
+												Script: &ScriptTemplate{
+													Source: "ghi",
+												},
+											},
+										}, {
+											Name: "hello2",
+											Inline: &Template{
+												Script: &ScriptTemplate{
+													Source: "jkl",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			dagtmpl1 := &wf.Spec.Templates[0].DAG.Tasks[0]
+			dagtmpl2 := &wf.Spec.Templates[0].DAG.Tasks[1]
+			steptmpl1 := &wf.Spec.Templates[1].Steps[0].Steps[0]
+			steptmpl2 := &wf.Spec.Templates[1].Steps[0].Steps[1]
+			stored, err := wf.SetStoredTemplate(scope, "dag-template", dagtmpl1, dagtmpl1.Inline)
+			assert.Equal(t, shouldStore, stored, "DAG template 1 should be stored for non local scopes")
+			assert.Nil(t, err, "SetStoredTemplate for DAG1 should not return an error")
+			stored, err = wf.SetStoredTemplate(scope, "dag-template", dagtmpl2, dagtmpl2.Inline)
+			assert.Equal(t, shouldStore, stored, "DAG template 2 should be stored for non local scopes")
+			assert.Nil(t, err, "SetStoredTemplate for DAG2 should not return an error")
+			stored, err = wf.SetStoredTemplate(scope, "step-template", steptmpl1, steptmpl1.Inline)
+			assert.Equal(t, shouldStore, stored, "Step template 1 should be stored for non local scopes")
+			assert.Nil(t, err, "SetStoredTemplate for Step 1 should not return an error")
+			stored, err = wf.SetStoredTemplate(scope, "step-template", steptmpl2, steptmpl2.Inline)
+			assert.Equal(t, shouldStore, stored, "Step template 2 should be stored for non local scopes")
+			assert.Nil(t, err, "SetStoredTemplate for Step 2 should not return an error")
+			// For cases where we can store we should be able to retrieve and check
+			if shouldStore {
+				dagretrieved1 := wf.GetStoredTemplate(scope, "dag-template", dagtmpl1)
+				assert.NotNil(t, dagretrieved1, "We should retrieve DAG Template 1")
+				assert.Equal(t, dagtmpl1.Inline, dagretrieved1, "DAG template 1 should match what we stored")
+				dagretrieved2 := wf.GetStoredTemplate(scope, "dag-template", dagtmpl2)
+				assert.NotNil(t, dagretrieved2, "We should retrieve DAG Template 2")
+				assert.Equal(t, dagtmpl2.Inline, dagretrieved2, "DAG template 2 should match what we stored")
+				assert.NotEqual(t, dagretrieved1, dagretrieved2, "DAG template 1 and 2 should be different")
+
+				stepretrieved1 := wf.GetStoredTemplate(scope, "step-template", steptmpl1)
+				assert.NotNil(t, stepretrieved1, "We should retrieve Step Template 1")
+				assert.Equal(t, steptmpl1.Inline, stepretrieved1, "Step template 1 should match what we stored")
+				stepretrieved2 := wf.GetStoredTemplate(scope, "step-template", steptmpl2)
+				assert.NotNil(t, stepretrieved2, "We should retrieve Step Template 2")
+				assert.Equal(t, steptmpl2.Inline, stepretrieved2, "Step template 2 should match what we stored")
+				assert.NotEqual(t, stepretrieved1, stepretrieved2, "Step template 1 and 2 should be different")
+			}
+		})
+	}
 }

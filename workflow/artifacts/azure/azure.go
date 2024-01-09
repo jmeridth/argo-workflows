@@ -127,9 +127,9 @@ func (azblobDriver *ArtifactDriver) Load(artifact *wfv1.Artifact, path string) e
 		return fmt.Errorf("unable to determine if %s is a directory: %s", artifact.Azure.Blob, err)
 	}
 
-	// It's not a directory and the file doesn't exist, so return the original BlobNotFound error.
+	// It's not a directory and the file doesn't exist, Return the original NoSuchKey error.
 	if !isDir && !isEmptyFile {
-		return fmt.Errorf("unable to download blob %s: %s", artifact.Azure.Blob, origErr)
+		return argoerrors.New(argoerrors.CodeNotFound, origErr.Error())
 	}
 
 	// When we tried to download the blob as a file, we created an empty file for the
@@ -155,6 +155,10 @@ func DownloadFile(containerClient *azblob.ContainerClient, blobName, path string
 		return fmt.Errorf("unable to create Azure Blob client for %s: %s", blobName, err)
 	}
 
+	err = os.MkdirAll(filepath.Dir(path), 0755)
+	if err != nil {
+		return fmt.Errorf("unable to create dir for file %s: %s", path, err)
+	}
 	outFile, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("unable to create file %s: %s", path, err)
@@ -178,7 +182,7 @@ func (azblobDriver *ArtifactDriver) DownloadDirectory(containerClient *azblob.Co
 		return fmt.Errorf("unable to list blob %s in Azure Storage: %s", artifact.Azure.Blob, err)
 	}
 
-	err = os.Mkdir(path, 0755)
+	err = os.MkdirAll(path, 0755)
 	if err != nil {
 		return fmt.Errorf("unable to create local directory %s: %s", path, err)
 	}
@@ -322,7 +326,7 @@ func (azblobDriver *ArtifactDriver) Delete(artifact *wfv1.Artifact) error {
 	}
 
 	if !isDir {
-		return DeleteBlob(containerClient, artifact.Azure.Blob)
+		return DeleteBlob(containerClient, artifact.Azure.Blob, true)
 	} else {
 		files, err := azblobDriver.ListObjects(artifact)
 		if err != nil {
@@ -335,18 +339,18 @@ func (azblobDriver *ArtifactDriver) Delete(artifact *wfv1.Artifact) error {
 				continue
 			}
 
-			if err := DeleteBlob(containerClient, file); err != nil {
+			if err := DeleteBlob(containerClient, file, true); err != nil {
 				return err
 			}
 		}
 		if directoryFile != "" {
-			return DeleteBlob(containerClient, directoryFile)
+			return DeleteBlob(containerClient, directoryFile, true)
 		}
 	}
 	return nil
 }
 
-func DeleteBlob(containerClient *azblob.ContainerClient, blobName string) error {
+func DeleteBlob(containerClient *azblob.ContainerClient, blobName string, allowNonExistent bool) error {
 	blobClient, err := containerClient.NewBlobClient(blobName)
 	if err != nil {
 		return fmt.Errorf("unable to create Azure Blob client for %s: %s", blobName, err)
@@ -354,7 +358,12 @@ func DeleteBlob(containerClient *azblob.ContainerClient, blobName string) error 
 
 	_, err = blobClient.Delete(context.TODO(), nil)
 	if err != nil {
-		return fmt.Errorf("unable to delete Azure Blob %s: %s", blobName, err)
+		if allowNonExistent && IsAzureError(err, azblob.StorageErrorCodeBlobNotFound) {
+			log.Debugf("blob to delete '%s' does not exist: %s", blobName, err)
+			return nil
+		} else {
+			return fmt.Errorf("unable to delete Azure Blob %s: %s", blobName, err)
+		}
 	}
 
 	return err

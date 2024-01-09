@@ -280,6 +280,7 @@ func TestUntar(t *testing.T) {
 	destPath := "testdata/untarredDir"
 	filePath := "testdata/untarredDir/file"
 	linkPath := "testdata/untarredDir/link"
+	emptyDirPath := "testdata/untarredDir/empty-dir"
 
 	// test
 	err := untar(tarPath, destPath)
@@ -295,11 +296,16 @@ func TestUntar(t *testing.T) {
 	fileInfo, err = os.Stat(linkPath)
 	assert.NoError(t, err)
 	assert.True(t, fileInfo.Mode().IsRegular())
+	fileInfo, err = os.Stat(emptyDirPath)
+	assert.NoError(t, err)
+	assert.True(t, fileInfo.Mode().IsDir())
 
 	// cleanup
 	err = os.Remove(linkPath)
 	assert.NoError(t, err)
 	err = os.Remove(filePath)
+	assert.NoError(t, err)
+	err = os.Remove(emptyDirPath)
 	assert.NoError(t, err)
 	err = os.Remove(destPath)
 	assert.NoError(t, err)
@@ -514,7 +520,7 @@ func TestMonitorProgress(t *testing.T) {
 }
 
 func TestSaveLogs(t *testing.T) {
-	const artStorageError = "You need to configure artifact storage. More information on how to do this can be found in the docs: https://argoproj.github.io/argo-workflows/configure-artifact-repository/"
+	const artStorageError = "You need to configure artifact storage. More information on how to do this can be found in the docs: https://argo-workflows.readthedocs.io/en/release-3.4/configure-artifact-repository/"
 	mockRuntimeExecutor := mocks.ContainerRuntimeExecutor{}
 	mockRuntimeExecutor.On("GetOutputStream", mock.Anything, mock.AnythingOfType("string"), true).Return(io.NopCloser(strings.NewReader("hello world")), nil)
 	t.Run("Simple Pod node", func(t *testing.T) {

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/argoproj/pkg/sync"
 	"github.com/stretchr/testify/assert"
 	authorizationv1 "k8s.io/api/authorization/v1"
@@ -93,6 +95,41 @@ metadata:
   labels:
     foo: bar
 spec:
+  entrypoint: whalesay
+  serviceAccountName: whalesay
+  templates:
+  - name: whalesay
+    metadata:
+      annotations:
+        annotationKey1: "annotationValue1"
+        annotationKey2: "annotationValue2"
+      labels:
+        labelKey1: "labelValue1"
+        labelKey2: "labelValue2"
+    container:
+      image: docker/whalesay:latest
+      command: [cowsay]
+      args: ["hello world"]
+`
+
+var testDefaultVolumeClaimTemplateWf = `
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: hello-world
+  labels:
+    foo: bar
+spec:
+  volumeClaimTemplates:
+  - metadata:
+      name: workdir
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Mi
+      storageClassName: local-path
   entrypoint: whalesay
   serviceAccountName: whalesay
   templates:
@@ -221,7 +258,7 @@ func newController(options ...interface{}) (context.CancelFunc, *WorkflowControl
 
 	// always compare to WorkflowController.Run to see what this block of code should be doing
 	{
-		wfc.wfInformer = util.NewWorkflowInformer(dynamicClient, "", 0, wfc.tweakListOptions, indexers)
+		wfc.wfInformer = util.NewWorkflowInformer(dynamicClient, "", 0, wfc.tweakListRequestListOptions, wfc.tweakWatchRequestListOptions, indexers)
 		wfc.wfTaskSetInformer = informerFactory.Argoproj().V1alpha1().WorkflowTaskSets()
 		wfc.artGCTaskInformer = informerFactory.Argoproj().V1alpha1().WorkflowArtifactGCTasks()
 		wfc.taskResultInformer = wfc.newWorkflowTaskResultInformer()
@@ -294,6 +331,30 @@ func newControllerWithComplexDefaults() (context.CancelFunc, *WorkflowController
 	return cancel, controller
 }
 
+func newControllerWithDefaultsVolumeClaimTemplate() (context.CancelFunc, *WorkflowController) {
+	cancel, controller := newController(func(controller *WorkflowController) {
+		controller.Config.WorkflowDefaults = &wfv1.Workflow{
+			Spec: wfv1.WorkflowSpec{
+				VolumeClaimTemplates: []apiv1.PersistentVolumeClaim{{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "workdir",
+					},
+					Spec: apiv1.PersistentVolumeClaimSpec{
+						AccessModes: []apiv1.PersistentVolumeAccessMode{apiv1.ReadWriteOnce},
+						Resources: apiv1.ResourceRequirements{
+							Requests: apiv1.ResourceList{
+								apiv1.ResourceStorage: resource.MustParse("1Mi"),
+							},
+						},
+						StorageClassName: pointer.String("local-path"),
+					},
+				}},
+			},
+		}
+	})
+	return cancel, controller
+}
+
 func unmarshalArtifact(yamlStr string) *wfv1.Artifact {
 	var artifact wfv1.Artifact
 	wfv1.MustUnmarshal([]byte(yamlStr), &artifact)
@@ -302,6 +363,14 @@ func unmarshalArtifact(yamlStr string) *wfv1.Artifact {
 
 func expectWorkflow(ctx context.Context, controller *WorkflowController, name string, test func(wf *wfv1.Workflow)) {
 	wf, err := controller.wfclientset.ArgoprojV1alpha1().Workflows("").Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		panic(err)
+	}
+	test(wf)
+}
+
+func expectNamespacedWorkflow(ctx context.Context, controller *WorkflowController, namespace, name string, test func(wf *wfv1.Workflow)) {
+	wf, err := controller.wfclientset.ArgoprojV1alpha1().Workflows(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		panic(err)
 	}
@@ -488,6 +557,15 @@ func TestAddingWorkflowDefaultComplexTwo(t *testing.T) {
 	assert.Contains(t, workflow.Annotations, "annotation")
 }
 
+func TestAddingWorkflowDefaultVolumeClaimTemplate(t *testing.T) {
+	cancel, controller := newControllerWithDefaultsVolumeClaimTemplate()
+	defer cancel()
+	workflow := wfv1.MustUnmarshalWorkflow(testDefaultWf)
+	err := controller.setWorkflowDefaults(workflow)
+	assert.NoError(t, err)
+	assert.Equal(t, workflow, wfv1.MustUnmarshalWorkflow(testDefaultVolumeClaimTemplateWf))
+}
+
 func TestNamespacedController(t *testing.T) {
 	kubeClient := fake.Clientset{}
 	allowed := false
@@ -632,6 +710,67 @@ func TestCheckAndInitWorkflowTmplRef(t *testing.T) {
 	assert.Equal(t, wftmpl.Spec.Templates, woc.execWf.Spec.Templates)
 }
 
+const wfWithInvalidMetadataLabelsFrom = `
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: invalid-labels-from
+spec:
+  serviceAccountName: my-sa
+  entrypoint: test-container
+  arguments:
+    parameters:
+      - name: execution_label
+        value: some/special/char
+  workflowMetadata:
+    labelsFrom:
+      execution_label:
+        expression: workflow.parameters.execution_label
+  templates:
+  - name: test-container
+    container:
+      image: alpine:latest
+      command: ["echo", "bye"]
+`
+
+const wfWithInvalidMetadataLabels = `
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: invalid-labels
+spec:
+  serviceAccountName: my-sa
+  entrypoint: test-container
+  workflowMetadata:
+    labels:
+      test: $INVALID
+  templates:
+  - name: test-container
+    container:
+      image: alpine:latest
+      command: ["echo", "bye"]
+`
+
+func TestInvalidWorkflowMetadata(t *testing.T) {
+	wf := wfv1.MustUnmarshalWorkflow(wfWithInvalidMetadataLabelsFrom)
+	cancel, controller := newController(wf)
+	defer cancel()
+	woc := newWorkflowOperationCtx(wf, controller)
+	err := woc.setExecWorkflow(context.Background())
+	if assert.NotNil(t, err) {
+		assert.Contains(t, err.Error(), "invalid label value")
+	}
+
+	wf = wfv1.MustUnmarshalWorkflow(wfWithInvalidMetadataLabels)
+	cancel, controller = newController(wf)
+	defer cancel()
+	woc = newWorkflowOperationCtx(wf, controller)
+	err = woc.setExecWorkflow(context.Background())
+	if assert.NotNil(t, err) {
+		assert.Contains(t, err.Error(), "invalid label value")
+	}
+}
+
 func TestIsArchivable(t *testing.T) {
 	cancel, controller := newController()
 	defer cancel()
@@ -733,9 +872,6 @@ func TestParallelismWithInitializeRunningWorkflows(t *testing.T) {
 		"Parallelism": func(x *WorkflowController) {
 			x.Config.Parallelism = 1
 		},
-		"NamespaceParallelism": func(x *WorkflowController) {
-			x.Config.NamespaceParallelism = 1
-		},
 	} {
 		t.Run(tt, func(t *testing.T) {
 			cancel, controller := newController(
@@ -795,6 +931,109 @@ status:
 					assert.Equal(t, "Workflow processing has been postponed because too many workflows are already running", wf.Status.Message)
 				}
 			})
+		})
+	}
+}
+
+func TestNamespaceParallelismWithInitializeRunningWorkflows(t *testing.T) {
+	for tt, f := range map[string]func(controller *WorkflowController){
+		"NamespaceParallelism": func(x *WorkflowController) {
+			x.Config.NamespaceParallelism = 1
+		},
+	} {
+		t.Run(tt, func(t *testing.T) {
+			cancel, controller := newController(
+				wfv1.MustUnmarshalWorkflow(`
+metadata:
+  name: my-ns-0-wf-0
+  namespace: ns-0
+  creationTimestamp: 2023-06-13T16:39:00Z
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      container:
+        image: my-image
+`),
+				wfv1.MustUnmarshalWorkflow(`
+metadata:
+  name: my-ns-1-wf-0
+  namespace: ns-1
+  creationTimestamp: 2023-06-13T16:40:00Z
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      container:
+        image: my-image
+`),
+				wfv1.MustUnmarshalWorkflow(`
+metadata:
+  name: my-ns-0-wf-1
+  namespace: ns-0
+  creationTimestamp: 2023-06-13T16:41:00Z
+  labels:
+    workflows.argoproj.io/phase: Running
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      container:
+        image: my-image
+status:
+  phase: Running
+`),
+				wfv1.MustUnmarshalWorkflow(`
+metadata:
+  name: my-ns-1-wf-1
+  namespace: ns-1
+  creationTimestamp: 2023-06-13T16:42:00Z
+  labels:
+    workflows.argoproj.io/phase: Running
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      container:
+        image: my-image
+status:
+  phase: Running
+`),
+				f,
+			)
+			defer cancel()
+			ctx := context.Background()
+
+			ns0PendingWfTested := false
+			ns1PendingWfTested := false
+			for {
+				assert.True(t, controller.processNextItem(ctx))
+				if !ns0PendingWfTested {
+					expectNamespacedWorkflow(ctx, controller, "ns-0", "my-ns-0-wf-0", func(wf *wfv1.Workflow) {
+						if assert.NotNil(t, wf) {
+							if wf.Status.Phase != "" {
+								assert.Equal(t, wfv1.WorkflowPending, wf.Status.Phase)
+								assert.Equal(t, "Workflow processing has been postponed because too many workflows are already running", wf.Status.Message)
+								ns0PendingWfTested = true
+							}
+						}
+					})
+				}
+				if !ns1PendingWfTested {
+					expectNamespacedWorkflow(ctx, controller, "ns-1", "my-ns-1-wf-0", func(wf *wfv1.Workflow) {
+						if assert.NotNil(t, wf) {
+							if wf.Status.Phase != "" {
+								assert.Equal(t, wfv1.WorkflowPending, wf.Status.Phase)
+								assert.Equal(t, "Workflow processing has been postponed because too many workflows are already running", wf.Status.Message)
+								ns1PendingWfTested = true
+							}
+						}
+					})
+				}
+				if ns0PendingWfTested && ns1PendingWfTested {
+					break
+				}
+			}
 		})
 	}
 }

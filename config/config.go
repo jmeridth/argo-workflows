@@ -71,6 +71,9 @@ type Config struct {
 	// Links to related apps.
 	Links []*wfv1.Link `json:"links,omitempty"`
 
+	// Columns are custom columns that will be exposed in the Workflow List View.
+	Columns []*wfv1.Column `json:"columns,omitempty"`
+
 	// WorkflowDefaults are values that will apply to all Workflows from this controller, unless overridden on the Workflow-level
 	WorkflowDefaults *wfv1.Workflow `json:"workflowDefaults,omitempty"`
 
@@ -94,7 +97,7 @@ type Config struct {
 	InitialDelay metav1.Duration `json:"initialDelay,omitempty"`
 
 	// The command/args for each image, needed when the command is not specified and the emissary executor is used.
-	// https://argoproj.github.io/argo-workflows/workflow-executors/#emissary-emissary
+	// https://argo-workflows.readthedocs.io/en/release-3.4/workflow-executors/#emissary-emissary
 	Images map[string]Image `json:"images,omitempty"`
 
 	RetentionPolicy *RetentionPolicy `json:"retentionPolicy,omitempty"`

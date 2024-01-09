@@ -17,7 +17,11 @@ import (
 
 func PrintWorkflows(workflows wfv1.Workflows, out io.Writer, opts PrintOpts) error {
 	if len(workflows) == 0 {
-		_, _ = fmt.Fprintln(out, "No workflows found")
+		if opts.Output == "json" || opts.Output == "yaml" {
+			_, _ = fmt.Fprintln(out, "[]")
+		} else {
+			_, _ = fmt.Fprintln(out, "No workflows found")
+		}
 		return nil
 	}
 
@@ -109,7 +113,7 @@ func printCostOptimizationNudges(wfList []wfv1.Workflow, out io.Writer) {
 			_, _ = fmt.Fprintf(out, "%d completed ", completed)
 		}
 		_, _ = fmt.Fprintln(out, "workflows. Reducing the total number of workflows will reduce your costs.")
-		_, _ = fmt.Fprintln(out, "Learn more at https://argoproj.github.io/argo-workflows/cost-optimisation/")
+		_, _ = fmt.Fprintln(out, "Learn more at https://argo-workflows.readthedocs.io/en/release-3.4/cost-optimisation/")
 	}
 }
 

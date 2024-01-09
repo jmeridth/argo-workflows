@@ -80,7 +80,7 @@ export class ArchivedWorkflowList extends BasePage<RouteComponentProps<any>, Sta
     public componentDidUpdate(): void {
         if (this.state.deep === true && this.state.workflows && this.state.workflows.length === 1) {
             const workflow = this.state.workflows[0];
-            const url = '/archived-workflows/' + workflow.metadata.namespace + '/' + (workflow.metadata.uid || '');
+            const url = uiUrl('/archived-workflows/' + workflow.metadata.namespace + '/' + (workflow.metadata.uid || ''));
             this.props.history.push(url);
         }
     }
@@ -249,7 +249,7 @@ export class ArchivedWorkflowList extends BasePage<RouteComponentProps<any>, Sta
         if (!this.state.workflows) {
             return <Loading />;
         }
-        const learnMore = <a href='https://argoproj.github.io/argo-workflows/workflow-archive/'>Learn more</a>;
+        const learnMore = <a href='https://argo-workflows.readthedocs.io/en/release-3.4/workflow-archive/'>Learn more</a>;
         if (this.state.workflows.length === 0) {
             return (
                 <ZeroState title='No archived workflows'>

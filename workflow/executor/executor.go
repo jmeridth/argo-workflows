@@ -318,6 +318,14 @@ func (we *WorkflowExecutor) saveArtifact(ctx context.Context, containerName stri
 		}
 		return err
 	}
+	fi, err := os.Stat(localArtPath)
+	if err != nil {
+		return err
+	}
+	size := fi.Size()
+	if size == 0 {
+		log.Warnf("The file %q is empty. It may not be uploaded successfully depending on the artifact driver", localArtPath)
+	}
 	return we.saveArtifactFromFile(ctx, art, fileName, localArtPath)
 }
 
@@ -793,7 +801,7 @@ func (we *WorkflowExecutor) reportResult(ctx context.Context, result wfv1.NodeRe
 	}, errorsutil.IsTransientErr, func() error {
 		err := we.upsertTaskResult(ctx, result)
 		if apierr.IsForbidden(err) {
-			log.WithError(err).Warn("failed to patch task set, falling back to legacy/insecure pod patch, see https://argoproj.github.io/argo-workflows/workflow-rbac/")
+			log.WithError(err).Warn("failed to patch task set, falling back to legacy/insecure pod patch, see https://argo-workflows.readthedocs.io/en/release-3.4/workflow-rbac/")
 			if result.Outputs.HasOutputs() {
 				value, err := json.Marshal(result.Outputs)
 				if err != nil {
@@ -888,13 +896,17 @@ func untar(tarPath string, destPath string) error {
 				continue
 			}
 			target := filepath.Join(dest, filepath.Clean(header.Name))
-			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil && os.IsExist(err) {
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil && os.IsExist(err) {
 				return err
 			}
 			switch header.Typeflag {
 			case tar.TypeSymlink:
 				err := os.Symlink(header.Linkname, target)
 				if err != nil {
+					return err
+				}
+			case tar.TypeDir:
+				if err := os.MkdirAll(target, 0o755); err != nil {
 					return err
 				}
 			case tar.TypeReg:
